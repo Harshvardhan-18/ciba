@@ -1,0 +1,25 @@
+[project]
+name = "ciba"
+version = "0.1.0"
+description = "Agentic Creative Campaign Engine"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "python-jose[cryptography]>=3.3.0",
+    "pydantic-settings>=2.3.0",
+    "httpx>=0.27.0",
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "langgraph>=0.1.0",
+    "google-generativeai>=0.7.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
