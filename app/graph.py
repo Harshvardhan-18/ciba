@@ -30,13 +30,19 @@ Supported:
 from __future__ import annotations
 
 import abc
+import base64
 import json
 import logging
 import os
 import re
+import uuid
+from pathlib import Path
 from typing import TypedDict, Literal
 
+import httpx
 from langgraph.graph import StateGraph, END
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -66,18 +72,101 @@ class MockImageProvider(ImageGenerationProvider):
 
 class RemoteFluxKaggleProvider(ImageGenerationProvider):
     """
-    Primary DEV/BUILD provider — $0 cost. Posts a job to the local
-    generation-gateway which Kaggle polls (or, for the simplest V1 dev loop,
-    calls a tunneled Kaggle HTTPS endpoint directly). Implementation detail
-    is intentionally not fixed here — the contract (inputs -> image url) is
-    what the rest of the system depends on.
+    Primary DEV/BUILD provider — $0 cost via Kaggle T4 running FLUX.2 Klein.
 
-    Use this for all day-to-day development, testing the pipeline, and the
-    generate/evaluate/retry loop. Quality is "good enough to prove the
-    architecture works," not "portfolio-video good."
+    V1 contract: direct HTTPS call to a tunneled Kaggle endpoint (the
+    "simplest V1 dev loop" from the constitution; the gateway/pull pattern
+    is build-later). The worker is expected to accept:
+
+        POST {KAGGLE_GATEWAY_URL}/generate
+        Authorization: Bearer {KAGGLE_API_KEY}   (only if configured)
+        {
+          "product_images":   [urls/paths...],
+          "reference_images": [urls/paths...],
+          "prompt": "...",
+          "width": 1080,
+          "height": 1350
+        }
+
+    and respond either:
+      - 200 JSON {"image": "<base64 png>"} (preferred — Kaggle can't host
+        public URLs), or
+      - 200 raw image/* bytes (simple workers).
+
+    The image is decoded and written to local disk (MEDIA_DIR), because V1
+    stores images on local disk, not S3. Returns the local path.
+
+    Raises on any transport/HTTP/protocol failure so the caller treats it as
+    an infra failure (INFRA_FAILED), not a quality failure.
     """
-    async def generate(self, product_images, reference_images, prompt, width, height) -> str:
-        raise NotImplementedError("Wire up once the Kaggle worker gateway exists")
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self.base_url = (base_url or settings.KAGGLE_GATEWAY_URL).rstrip("/")
+        self.api_key = settings.KAGGLE_API_KEY if api_key is None else api_key
+        self.timeout = settings.KAGGLE_REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
+
+    async def generate(
+        self,
+        product_images: list[str],
+        reference_images: list[str],
+        prompt: str,
+        width: int,
+        height: int,
+    ) -> str:
+        if not self.base_url:
+            raise RuntimeError(
+                "RemoteFluxKaggleProvider needs KAGGLE_GATEWAY_URL set to a tunneled "
+                "Kaggle HTTPS endpoint (or use IMAGE_GENERATION_PROVIDER=mock)."
+            )
+
+        url = f"{self.base_url}/generate"
+        payload = {
+            "product_images": product_images,
+            "reference_images": reference_images,
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                return await self._persist(resp, width, height)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Kaggle generation HTTP error: {exc}") from exc
+
+    async def _persist(self, resp: httpx.Response, width: int, height: int) -> str:
+        """Decode the worker response into a local PNG file; return its path."""
+        content_type = resp.headers.get("content-type", "")
+        if "image/" in content_type:
+            data = resp.content
+        else:
+            body = resp.json()
+            if not isinstance(body, dict):
+                data = resp.content
+            elif body.get("image"):
+                data = base64.b64decode(body["image"])
+            elif body.get("image_url"):
+                # Remote-hosted URL (rare on Kaggle); return it as-is.
+                return body["image_url"]
+            else:
+                raise RuntimeError(f"Unexpected Kaggle response payload: {str(body)[:200]}")
+
+        media_dir = Path(settings.MEDIA_DIR)
+        media_dir.mkdir(parents=True, exist_ok=True)
+        path = media_dir / f"{width}x{height}_{uuid.uuid4().hex}.png"
+        path.write_bytes(data)
+        logger.info("RemoteFluxKaggleProvider: saved %s (%d bytes)", path, len(data))
+        return str(path)
 
 
 class GeminiImageProvider(ImageGenerationProvider):
@@ -541,6 +630,7 @@ class GenerationState(TypedDict):
     corrective_instruction: str | None   # set by diagnose_failure on retry
     generated_image_url: str | None
     scores: dict | None
+    prompt_used: str | None              # exact prompt sent (incl. correction addendum)
     outcome: Literal["approved", "retry", "manual_review", "infra_failed"] | None
 
 
@@ -548,6 +638,7 @@ async def generate_image_node(state: GenerationState, provider: ImageGenerationP
     prompt = state["asset_spec"]["generation_prompt"]
     if state["corrective_instruction"]:
         prompt = f"{prompt}\n\nCorrection: {state['corrective_instruction']}"
+    state["prompt_used"] = prompt
     try:
         state["generated_image_url"] = await provider.generate(
             product_images=state["product_images"],

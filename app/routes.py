@@ -42,6 +42,7 @@ from app.graph import (
     build_director_graph, build_planning_graph,
     DirectorState, PlannerState, GenerationState,
     MockImageProvider, MockVisionEvaluator,
+    RemoteFluxKaggleProvider, GeminiImageProvider,
     ImageGenerationProvider, VisionEvaluator,
     generate_image_node, evaluate_node, diagnose_failure_node,
     FIXED_PLACEMENTS,
@@ -61,14 +62,20 @@ def get_image_provider() -> ImageGenerationProvider:
     provider = os.environ.get("IMAGE_GENERATION_PROVIDER", "mock").lower()
     if provider == "mock":
         return MockImageProvider()
+    if provider in ("flux2_klein_kaggle", "flux"):
+        # Free Kaggle T4 worker — the build/dev provider. Never the default,
+        # never called from tests/CI (requires KAGGLE_GATEWAY_URL).
+        return RemoteFluxKaggleProvider()
+    if provider == "gemini":
+        # Showcase-only (portfolio demo video recording). Paid; never default.
+        return GeminiImageProvider()
     raise ValueError(f"Unknown IMAGE_GENERATION_PROVIDER: {provider!r}")
 
 
 def get_vision_evaluator() -> VisionEvaluator:
-    provider = os.environ.get("IMAGE_GENERATION_PROVIDER", "mock").lower()
-    if provider == "mock":
-        return MockVisionEvaluator()
-    raise ValueError(f"Unknown IMAGE_GENERATION_PROVIDER: {provider!r}")
+    # Checkpoint 4 wires the real VLM + SigLIP + OCR evaluator; until then the
+    # mock evaluator is the only one, regardless of the generation provider.
+    return MockVisionEvaluator()
 
 
 # ---------------------------------------------------------------------------
@@ -527,9 +534,11 @@ async def manual_regenerate(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Manual override for assets stuck in MANUAL_REVIEW — resets the attempt
-    counter and runs one fresh generation attempt. Distinct from the
-    automatic retry loop, which stops itself at MAX_ATTEMPTS.
+    Manual override for assets stuck in MANUAL_REVIEW. Schedules a fresh
+    generation pass (is_manual_retry=True, up to MAX_ATTEMPTS new attempts on
+    top of existing history) so the user can force another shot. Distinct
+    from the automatic retry loop, which caps at MAX_ATTEMPTS total quality
+    attempts per asset.
     """
     # Verify campaign ownership
     campaign = (await db.execute(
@@ -674,20 +683,24 @@ async def _run_generation_loop(
     session_factory=None,
 ) -> None:
     """
-    Checkpoint 2 implementation: single attempt per asset (happy path).
+    Full generate -> evaluate -> diagnose -> regenerate loop (Checkpoint 3).
 
-    Design decision: We implement ONE attempt here (not the full 3-attempt
-    retry loop) because:
-    1. MockImageProvider always passes — retries add zero test coverage value.
-    2. The retry loop's business value (showing degraded -> improved outputs)
-       only manifests with real providers (Checkpoint 3+).
-    3. The full loop skeleton is already specified in the route docstring
-       and in graph.py comments — it is not lost, just deferred.
-    4. Keeping this simple avoids the complexity of session-per-attempt
-       timing when both generation and evaluation are <1ms mocks.
+    Runs up to MAX_ATTEMPTS quality attempts per asset; each below-threshold
+    evaluation feeds a corrective_instruction into the next attempt via
+    diagnose_failure_node (stored on the next GenerationAttempt row). Every
+    attempt is persisted — never overwritten.
 
-    The loop will be fully implemented in Checkpoint 3 when RemoteFluxKaggle-
-    Provider and the real VisionEvaluator are wired in.
+    Landing states:
+      - first passing evaluation        -> APPROVED (+ approved_attempt_id)
+      - MAX_ATTEMPTS quality attempts below threshold -> MANUAL_REVIEW
+      - repeated provider crashes       -> INFRA_FAILED
+
+    Infra failures are recorded as GenerationAttempt rows with
+    infra_failed=True but do NOT consume a quality attempt number (per the
+    frozen retry policy). is_manual_retry=True (manual_regenerate route)
+    grants a fresh budget of up to MAX_ATTEMPTS new attempts on top of
+    existing history, so a user can force another pass on a MANUAL_REVIEW
+    asset without overwriting rows.
     session_factory: injectable for tests; defaults to AsyncSessionLocal.
     """
     if session_factory is None:
@@ -703,93 +716,114 @@ async def _run_generation_loop(
             asset = (await db.execute(
                 select(CreativeAsset).where(CreativeAsset.id == asset_id)
             )).scalar_one()
-
             asset.status = AssetStatus.GENERATING
             await db.flush()
 
-            # Determine attempt number (manual retry continues from prior attempts)
-            existing_count = len((await db.execute(
-                select(GenerationAttempt).where(GenerationAttempt.asset_id == asset_id)
+            # Only non-infra (quality) attempts count against the retry budget.
+            quality_count = len((await db.execute(
+                select(GenerationAttempt).where(
+                    GenerationAttempt.asset_id == asset_id,
+                    GenerationAttempt.infra_failed.is_(False),
+                )
             )).scalars().all())
-            attempt_number = existing_count + 1
-
-            # Run single generation attempt through the graph nodes
-            gen_state = GenerationState(
-                asset_spec=asset.asset_spec,
-                product_images=product_images,
-                reference_images=[],         # product images serve as reference in V1
-                brand_context=brand_context,
-                corrective_instruction=None,
-                generated_image_url=None,
-                scores=None,
-                outcome=None,
+            max_quality = (
+                MAX_ATTEMPTS if not is_manual_retry else quality_count + MAX_ATTEMPTS
             )
 
-            gen_state = await generate_image_node(gen_state, image_provider)
+            corrective_instruction: str | None = None
+            consecutive_infra = 0
+            final_status = AssetStatus.MANUAL_REVIEW
 
-            if gen_state["outcome"] == "infra_failed":
+            while quality_count < max_quality:
+                attempt_number = quality_count + 1
+                base_prompt = asset.asset_spec.get("generation_prompt", "")
+
+                gen_state = GenerationState(
+                    asset_spec=asset.asset_spec,
+                    product_images=product_images,
+                    reference_images=[],         # product images serve as reference in V1
+                    brand_context=brand_context,
+                    corrective_instruction=corrective_instruction,
+                    generated_image_url=None,
+                    scores=None,
+                    prompt_used=base_prompt,
+                    outcome=None,
+                )
+
+                gen_state = await generate_image_node(gen_state, image_provider)
+                prompt_used = gen_state.get("prompt_used") or base_prompt
+
+                # Infra failure: record it, retry the same quality attempt
+                # number (it doesn't consume the quality budget).
+                if gen_state["outcome"] == "infra_failed":
+                    consecutive_infra += 1
+                    db.add(GenerationAttempt(
+                        asset_id=asset_id,
+                        attempt_number=attempt_number,
+                        prompt_used=prompt_used,
+                        corrective_instruction=corrective_instruction,
+                        image_url=None,
+                        provider=provider_name,
+                        infra_failed=True,
+                        infra_error="Provider raised an exception",
+                    ))
+                    await db.flush()
+                    if consecutive_infra >= MAX_ATTEMPTS:
+                        final_status = AssetStatus.INFRA_FAILED
+                        break
+                    continue
+
+                consecutive_infra = 0
+                gen_state = await evaluate_node(gen_state, vision_evaluator)
+                scores = gen_state["scores"]
+
                 attempt = GenerationAttempt(
                     asset_id=asset_id,
                     attempt_number=attempt_number,
-                    prompt_used=asset.asset_spec.get("generation_prompt", ""),
-                    corrective_instruction=None,
-                    image_url=None,
+                    prompt_used=prompt_used,
+                    corrective_instruction=corrective_instruction,
+                    image_url=gen_state["generated_image_url"],
                     provider=provider_name,
-                    infra_failed=True,
-                    infra_error="Provider raised an exception",
+                    infra_failed=False,
                 )
                 db.add(attempt)
-                asset.status = AssetStatus.INFRA_FAILED
-                await db.commit()
-                return
+                await db.flush()
 
-            gen_state = await evaluate_node(gen_state, vision_evaluator)
+                db.add(Evaluation(
+                    attempt_id=attempt.id,
+                    vlm_product_score=scores["vlm_product_score"],
+                    siglip_similarity=scores["siglip_similarity"],
+                    ocr_text_score=scores["ocr_text_score"],
+                    product_fidelity=scores["product_fidelity"],
+                    brand_consistency=scores["brand_consistency"],
+                    composition_score=scores["composition_score"],
+                    prompt_alignment=scores["prompt_alignment"],
+                    overall_score=scores["overall_score"],
+                    critical_text_error=scores["critical_text_error"],
+                    passed=scores["passed"],
+                    failure_reason=scores["failure_reason"],
+                    vlm_provider=provider_name,
+                    raw_response=scores,
+                ))
+                await db.flush()
 
-            prompt_used = asset.asset_spec.get("generation_prompt", "")
-            attempt = GenerationAttempt(
-                asset_id=asset_id,
-                attempt_number=attempt_number,
-                prompt_used=prompt_used,
-                corrective_instruction=None,
-                image_url=gen_state["generated_image_url"],
-                provider=provider_name,
-                infra_failed=False,
-            )
-            db.add(attempt)
-            await db.flush()
+                quality_count += 1
 
-            scores = gen_state["scores"]
-            evaluation = Evaluation(
-                attempt_id=attempt.id,
-                vlm_product_score=scores["vlm_product_score"],
-                siglip_similarity=scores["siglip_similarity"],
-                ocr_text_score=scores["ocr_text_score"],
-                product_fidelity=scores["product_fidelity"],
-                brand_consistency=scores["brand_consistency"],
-                composition_score=scores["composition_score"],
-                prompt_alignment=scores["prompt_alignment"],
-                overall_score=scores["overall_score"],
-                critical_text_error=scores["critical_text_error"],
-                passed=scores["passed"],
-                failure_reason=scores["failure_reason"],
-                vlm_provider=provider_name,
-                raw_response=scores,
-            )
-            db.add(evaluation)
-            await db.flush()
+                if gen_state["outcome"] == "approved":
+                    asset.status = AssetStatus.APPROVED
+                    asset.approved_attempt_id = attempt.id
+                    final_status = AssetStatus.APPROVED
+                    break
 
-            if gen_state["outcome"] == "approved":
-                asset.status = AssetStatus.APPROVED
-                asset.approved_attempt_id = attempt.id
-            else:
-                # With mock, this branch is unreachable; with real providers this
-                # would loop. Full retry loop implemented in Checkpoint 3.
-                asset.status = AssetStatus.MANUAL_REVIEW
+                # Quality failure -> diagnose and feed the next attempt.
+                gen_state = diagnose_failure_node(gen_state)
+                corrective_instruction = gen_state["corrective_instruction"]
 
+            asset.status = final_status
             await db.commit()
             logger.info(
-                "_run_generation_loop: asset=%s -> %s (attempt %d)",
-                asset_id, asset.status.value, attempt_number,
+                "_run_generation_loop: asset=%s -> %s (quality attempts=%d)",
+                asset_id, asset.status.value, quality_count,
             )
 
             # After all assets finish, check if campaign is complete

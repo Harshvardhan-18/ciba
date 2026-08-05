@@ -22,6 +22,19 @@ class Settings(BaseSettings):
     # Defaults to "mock" so no GPU/API quota is consumed during dev/test.
     IMAGE_GENERATION_PROVIDER: str = "mock"
 
+    # --- Kaggle (RemoteFluxKaggleProvider) ---
+    # Base URL of the tunneled Kaggle HTTPS endpoint that serves FLUX.2 Klein
+    # (e.g. an ngrok/cloudflared URL). Empty by default so the provider can
+    # never fire accidentally; set it only when a worker is actually running.
+    KAGGLE_GATEWAY_URL: str = ""
+    # Optional shared secret sent as `Authorization: Bearer <key>` on each request.
+    KAGGLE_API_KEY: str = ""
+    # FLUX on a T4 is slow (roughly 1-2 min per image at production resolution).
+    KAGGLE_REQUEST_TIMEOUT_SECONDS: float = 300.0
+
+    # --- Image storage (V1: local disk, no S3) ---
+    MEDIA_DIR: str = "media/generated"
+
     # --- App ---
     DEBUG: bool = True
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
