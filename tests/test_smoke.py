@@ -295,3 +295,48 @@ async def test_full_round_trip(client: AsyncClient, test_user: User, session_fac
         f"\n    product={product_id}"
     )
 
+
+@pytest.mark.asyncio
+async def test_set_product_images(client: AsyncClient, session_factory):
+    """POST /products/{id}/images replaces product_images (Kaggle dataset paths)."""
+    brand_resp = await client.post("/api/v1/brands", json={"name": "Images Brand"})
+    assert brand_resp.status_code == 201
+    product_resp = await client.post(
+        "/api/v1/products",
+        json={"brand_id": brand_resp.json()["id"], "name": "Images Product"},
+    )
+    assert product_resp.status_code == 201
+    product_id = product_resp.json()["id"]
+
+    paths = ["/kaggle/input/my-product/p1.webp", "/kaggle/input/my-product/p2.webp"]
+    resp = await client.post(f"/api/v1/products/{product_id}/images", json={"product_images": paths})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["product_images"] == paths
+
+    # Round-trip: verify the row in the DB
+    async with session_factory() as session:
+        product = (await session.execute(
+            select(Product).where(Product.id == uuid.UUID(product_id))
+        )).scalar_one()
+    assert product.product_images == paths
+
+    # Replace semantics: a new list overwrites the old one.
+    resp2 = await client.post(
+        f"/api/v1/products/{product_id}/images",
+        json={"product_images": ["/kaggle/input/my-product/p3.webp"]},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["product_images"] == ["/kaggle/input/my-product/p3.webp"]
+    print("\nOK  set_product_images OK: replace semantics + DB round-trip")
+
+
+@pytest.mark.asyncio
+async def test_set_product_images_foreign_product_returns_404(client: AsyncClient):
+    """Setting images on a product not owned by the user returns 404."""
+    resp = await client.post(
+        f"/api/v1/products/{uuid.uuid4()}/images",
+        json={"product_images": ["/kaggle/input/x/p1.webp"]},
+    )
+    assert resp.status_code == 404, resp.text
+    print("\nOK  set_product_images ownership guard OK: 404 on foreign product")
+

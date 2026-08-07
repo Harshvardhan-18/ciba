@@ -33,14 +33,14 @@ Qdrant/vector retrieval, Kafka, Kubernetes/KEDA, S3/MinIO, OpenTelemetry/Prometh
 - `app/graph.py` — LangGraph (Director, Planner, gen/eval nodes) + provider interfaces/mocks + `PASS_THRESHOLDS`/`evaluate_pass` + Gemini Flash call
 - `app/evaluation.py` — Checkpoint 4: `HybridVisionEvaluator` (VLM + SigLIP + OCR), frozen fidelity weights, lazy heavy deps; VLM signal switched by `VLM_PROVIDER` (`kaggle` worker | `gemini` API)
 - `app/routes.py` — FastAPI contract: CRUD, campaign 202->poll, select-concept, assets poll, manual regenerate, background tasks
-- `app/main.py` — FastAPI app, CORS, mounts router at `/api/v1`
+- `app/main.py` — FastAPI app, CORS, `/media` static mount for generated images, router at `/api/v1`
 - `tests/conftest.py` — ensures `ciba_test` DB exists
 - `tests/test_smoke.py` — Checkpoint 1: brand/product CRUD
 - `tests/test_auth_integration.py` — real JWT -> user upsert (no dependency overrides)
 - `tests/test_e2e_checkpoint2.py` — full campaign flow with mocked generation/LLM
 - `tests/test_retry_loop.py` — 3-attempt generate/evaluate/diagnose loop with fake providers
 - `tests/test_hybrid_scores.py` — hybrid fidelity weights + hard-constraint pass (no real models)
-- `frontend/` — Next.js 16 + NextAuth v4 scaffolding; `app/api/auth/[...nextauth]/options.ts` uses custom HS256 JWS encode/decode (not NextAuth's default JWE) so FastAPI's python-jose can verify; `page.tsx`/`layout.tsx` are boilerplate
+- `frontend/` — Next.js 16 + NextAuth v4 studio UI: `app/(studio)/` (brand/product setup, campaign brief, concept picker, asset gallery with per-attempt history + regenerate), `app/api/token/route.ts` mints HS256 JWTs for the backend, `app/lib/api.ts` client; `options.ts` uses custom HS256 JWS encode/decode so FastAPI's python-jose can verify
 - `notebooks/flux-quality-test-working.ipynb` — standalone FLUX.2 Klein quality test (not integrated)
 - `notebooks/kaggle_flux_worker.py` — Kaggle-side HTTP worker: loads FLUX.2 Klein, serves POST /generate for `RemoteFluxKaggleProvider`
 - `notebooks/kaggle_eval_worker.py` — Kaggle-side eval worker: SmolVLM2 + SigLIP + RapidOCR, serves POST /evaluate for `HybridVisionEvaluator` (VLM_PROVIDER=kaggle)
@@ -49,11 +49,11 @@ Qdrant/vector retrieval, Kafka, Kubernetes/KEDA, S3/MinIO, OpenTelemetry/Prometh
 - `datasets/kaggle_flux_worker.py` — Kaggle-upload copy of the gen worker (single source of truth: `notebooks/`)
 - `datasets/kaggle_eval_worker.py` — Kaggle-upload copy of the eval worker (single source of truth: `notebooks/`)
 - `datasets/README.md` — Kaggle dataset upload + notebook attach + secrets guide + Checkpoint 4 verification steps
-, kaggle-only: `HybridVisionEvaluator` runs via `VLM_PROVIDER=kaggle` against a second Kaggle eval worker (`KAGGLE_EVAL_GATEWAY_URL`, SmolVLM2 + SigLIP + RapidOCR; `notebooks/kaggle_eval_worker.py`), with `VLM_PROVIDER=gemini` as the no-code-swap future path; frozen fidelity weights + hard-constraint pass covered by `tests/test_hybrid_scores.py`. Live validation still pending: stand up the eval worker tunnel, set `VISION_EVALUATOR_PROVIDER=hybrid` + `VLM_PROVIDER=kaggle`, and confirm the retry loop improves scores on a real campaign
+
 ## Current state
 > ⚠️ UPDATE ONLY THIS SECTION when a checkpoint lands.
 
-Checkpoints 1 and 2 are done: Postgres + migration + JWT auth + brand/product CRUD (with smoke/auth tests), and the real Gemini Flash Director loop with mock image/eval providers running the full campaign -> concepts -> select -> 3 assets flow (e2e-tested). Checkpoint 3 is done end-to-end: `RemoteFluxKaggleProvider` POSTs to a live tunneled Kaggle worker (`KAGGLE_GATEWAY_URL`) and persists PNGs to `MEDIA_DIR`, `_run_generation_loop` runs the full 3-attempt generate -> evaluate -> diagnose loop (covered by `tests/test_retry_loop.py`), and the Kaggle smoke test passed against the live worker. Checkpoint 4 is implemented but not yet validated live: `HybridVisionEvaluator` (Gemini VLM + SigLIP + OCR) is wired behind `VISION_EVALUATOR_PROVIDER=hybrid` with the frozen fidelity weights and hard-constraint pass (scoring covered by `tests/test_hybrid_scores.py`); still needs a real run (GEMINI_API_KEY + torch/transformers/rapidocr + product images resolvable on the backend) to confirm the retry loop improves scores. Checkpoint 5 (frontend UI — only NextAuth scaffolding exists) is not started.
+Checkpoints 1 and 2 are done: Postgres + migration + JWT auth + brand/product CRUD (with smoke/auth tests), and the real Gemini Flash Director loop with mock image/eval providers running the full campaign -> concepts -> select -> 3 assets flow (e2e-tested). Checkpoint 3 is done end-to-end: `RemoteFluxKaggleProvider` POSTs to a live tunneled Kaggle worker (`KAGGLE_GATEWAY_URL`) and persists PNGs to `MEDIA_DIR`, `_run_generation_loop` runs the full 3-attempt generate -> evaluate -> diagnose loop (covered by `tests/test_retry_loop.py`), and the Kaggle smoke test passed against the live worker. Checkpoint 4 is implemented, kaggle-only: `HybridVisionEvaluator` runs via `VLM_PROVIDER=kaggle` against a second Kaggle eval worker (`KAGGLE_EVAL_GATEWAY_URL`, SmolVLM2 + SigLIP + RapidOCR; `notebooks/kaggle_eval_worker.py`), with `VLM_PROVIDER=gemini` as the no-code-swap future path; frozen fidelity weights + hard-constraint pass covered by `tests/test_hybrid_scores.py`; live validation still pending (stand up the eval worker tunnel, set `VISION_EVALUATOR_PROVIDER=hybrid` + `VLM_PROVIDER=kaggle`, confirm the retry loop improves scores on a real campaign). Checkpoint 5 is implemented: the Next.js studio UI (brand/product setup, campaign brief, concept picker, asset gallery with per-attempt history + regenerate) runs against the FastAPI backend via `next dev` (`app/(studio)/`, `app/api/token/route.ts`, `app/lib/api.ts`). Note: `next build` fails on this machine — a Next 16 + Node 24 framework bug in the `_global-error` prerender (reproduced on a pristine scaffold) — so use `next dev`.
 
 ## When in doubt
 Prefer the boring Postgres-only solution over new infrastructure. Flag assumptions instead of guessing silently on anything touching the schema, auth, or retry logic.

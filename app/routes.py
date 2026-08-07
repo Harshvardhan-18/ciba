@@ -130,7 +130,7 @@ class ProductCreate(BaseModel):
     brand_id: uuid.UUID
     name: str
     description: str | None = None
-    # product_images uploaded via multipart on POST /products/{id}/images
+    # product_images set separately via POST /products/{id}/images
 
 
 class ProductOut(ProductCreate):
@@ -138,6 +138,12 @@ class ProductOut(ProductCreate):
     product_images: list[str]
 
     model_config = {"from_attributes": True}
+
+
+class ProductImagesUpdate(BaseModel):
+    # V1: plain strings the workers resolve — Kaggle dataset paths (e.g.
+    # /kaggle/input/<dataset>/p1.webp) or http(s) URLs. Replace semantics.
+    product_images: list[str] = Field(default_factory=list)
 
 
 @router.post("/products", response_model=ProductOut, status_code=201)
@@ -164,6 +170,34 @@ async def create_product(
         product_images=[],
     )
     db.add(product)
+    await db.flush()
+    return product
+
+
+@router.post("/products/{product_id}/images", response_model=ProductOut)
+async def set_product_images(
+    product_id: uuid.UUID,
+    payload: ProductImagesUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Replaces Product.product_images (the list of paths/URLs passed to the
+    Kaggle generation + eval workers). The product must belong to a brand the
+    authenticated user owns.
+    """
+    product = (await db.execute(
+        select(Product)
+        .join(Brand, Brand.id == Product.brand_id)
+        .where(Product.id == product_id, Brand.owner_id == user.id)
+    )).scalar_one_or_none()
+    if product is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found or not owned by current user.",
+        )
+
+    product.product_images = payload.product_images
     await db.flush()
     return product
 

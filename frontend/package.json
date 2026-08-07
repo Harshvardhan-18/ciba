@@ -8,11 +8,12 @@
     "start": "next start"
   },
   "dependencies": {
+    "jose": "^5.2.0",
     "jsonwebtoken": "^9.0.3",
-    "next": "16.2.12",
+    "next": "^16.3.0",
     "next-auth": "^4.24.15",
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",

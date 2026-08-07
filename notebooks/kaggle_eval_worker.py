@@ -29,7 +29,7 @@ because it lives on the backend.
 
 Run (Kaggle notebook cell):
     !pip install -q fastapi "uvicorn[standard]" transformers "pillow<12.0,>=8.0" \
-        rapidocr-onnxruntime "accelerate>=0.26.0"
+        rapidocr-onnxruntime "accelerate>=0.26.0" num2words
     !nohup python kaggle_eval_worker.py > eval_worker.log 2>&1 &
     !cloudflared tunnel --url http://localhost:8001   # or: !ngrok http 8001
     # backend: KAGGLE_EVAL_GATEWAY_URL=<public url>
@@ -106,7 +106,7 @@ def _get_vlm():
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 dtype = torch.float16 if device == "cuda" else torch.float32
                 model = AutoModelForImageTextToText.from_pretrained(
-                    VLM_MODEL_ID, torch_dtype=dtype
+                    VLM_MODEL_ID, dtype=dtype
                 ).to(device).eval()
                 processor = AutoProcessor.from_pretrained(VLM_MODEL_ID)
                 _vlm = (model, processor, device)
@@ -164,11 +164,18 @@ def load_optional_images(sources: list[str]) -> list[Image.Image]:
     return images
 
 
+def _placeholder_image() -> Image.Image:
+    return Image.new("RGB", (512, 512), color=(70, 110, 180))
+
+
 def _extract_json(text: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
-        raise RuntimeError(f"VLM did not return JSON: {text[:200]}")
-    return json.loads(text[start:end + 1])
+        raise RuntimeError(f"VLM did not return JSON (output: {text[:300]!r})")
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"VLM returned invalid JSON ({exc}); output: {text[:300]!r}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +218,11 @@ def _vlm_user_prompt(asset_spec: dict, brand_context: dict) -> str:
 
 def _run_vlm(images: list[Image.Image], asset_spec: dict, brand_context: dict) -> dict:
     model, processor, device = _get_vlm()
+    if not images:
+        # SmolVLM2's processor errors on an empty image list; keep the call alive
+        # with a placeholder so the error surfaces as a low fidelity score, not a 500.
+        print("[eval worker] no readable product refs; using placeholder image")
+        images = [_placeholder_image()]
     user_text = _VLM_SYSTEM_PROMPT + "\n\n" + _vlm_user_prompt(asset_spec, brand_context)
     messages = [{
         "role": "user",
@@ -313,34 +325,55 @@ def health() -> dict:
 
 @app.post("/evaluate", response_model=EvaluateResponse)
 def evaluate(req: EvaluateRequest) -> EvaluateResponse:
-    refs = load_optional_images(req.product_images)
+    import traceback
+
     try:
-        gen = Image.open(io.BytesIO(base64.b64decode(req.generated_image))).convert("RGB")
+        refs = load_optional_images(req.product_images)
+        try:
+            gen = Image.open(io.BytesIO(base64.b64decode(req.generated_image))).convert("RGB")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid generated_image: {exc}") from exc
+
+        vlm = _run_vlm(refs, req.asset_spec, req.brand_context)
+        siglip = _siglip_similarity(refs, gen)
+        ocr = _ocr_result(gen, req.asset_spec)
+
+        return EvaluateResponse(
+            vlm_product_score=vlm["vlm_product_score"],
+            brand_consistency=vlm["brand_consistency"],
+            composition_score=vlm["composition_score"],
+            prompt_alignment=vlm["prompt_alignment"],
+            critical_text_error=vlm["critical_text_error"] or ocr["critical_text_error"],
+            issues=vlm["issues"],
+            siglip_similarity=siglip,
+            ocr_text_score=ocr["ocr_text_score"],
+            ocr_details=ocr,
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"invalid generated_image: {exc}") from exc
-
-    vlm = _run_vlm(refs, req.asset_spec, req.brand_context)
-    siglip = _siglip_similarity(refs, gen)
-    ocr = _ocr_result(gen, req.asset_spec)
-
-    return EvaluateResponse(
-        vlm_product_score=vlm["vlm_product_score"],
-        brand_consistency=vlm["brand_consistency"],
-        composition_score=vlm["composition_score"],
-        prompt_alignment=vlm["prompt_alignment"],
-        critical_text_error=vlm["critical_text_error"] or ocr["critical_text_error"],
-        issues=vlm["issues"],
-        siglip_similarity=siglip,
-        ocr_text_score=ocr["ocr_text_score"],
-        ocr_details=ocr,
-    )
+        # Return the real cause as JSON so callers can read it, and log the
+        # full traceback to eval_worker.log.
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"evaluate failed: {exc}") from exc
 
 
 if __name__ == "__main__":
+    import sys
     import uvicorn
 
-    print(f"[eval worker] preloading {VLM_MODEL_ID} ...")
-    _get_vlm()
-    _get_siglip()
-    _get_ocr()
+    # stdout is redirected to eval_worker.log by the notebook's subprocess cell,
+    # which is block-buffered by default — line-buffer it so the log is live.
+    sys.stdout.reconfigure(line_buffering=True)
+
+    def _warmup() -> None:
+        print(f"[eval worker] warming {VLM_MODEL_ID} ...", flush=True)
+        _get_vlm()
+        _get_siglip()
+        _get_ocr()
+        print("[eval worker] all models ready", flush=True)
+
+    # Start uvicorn FIRST so /health answers immediately; models warm up in the
+    # background (a request that beats warm-up lazy-loads on demand).
+    threading.Thread(target=_warmup, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT)
