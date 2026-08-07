@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Base URL of the tunneled Kaggle HTTPS endpoint that serves FLUX.2 Klein
     # (e.g. an ngrok/cloudflared URL). Empty by default so the provider can
     # never fire accidentally; set it only when a worker is actually running.
-    KAGGLE_GATEWAY_URL: str = ""
+    KAGGLE_GATEWAY_URL: str = "https://a758-35-185-94-132.ngrok-free.app"
     # Optional shared secret sent as `Authorization: Bearer <key>` on each request.
     KAGGLE_API_KEY: str = ""
     # FLUX on a T4 is slow (roughly 1-2 min per image at production resolution).

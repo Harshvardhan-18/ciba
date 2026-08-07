@@ -39,6 +39,9 @@ Qdrant/vector retrieval, Kafka, Kubernetes/KEDA, S3/MinIO, OpenTelemetry/Prometh
 - `tests/test_e2e_checkpoint2.py` — full campaign flow with mocked generation/LLM
 - `frontend/` — Next.js 16 + NextAuth v4 scaffolding; `app/api/auth/[...nextauth]/options.ts` uses custom HS256 JWS encode/decode (not NextAuth's default JWE) so FastAPI's python-jose can verify; `page.tsx`/`layout.tsx` are boilerplate
 - `notebooks/flux-quality-test-working.ipynb` — standalone FLUX.2 Klein quality test (not integrated)
+- `notebooks/kaggle_flux_worker.py` — Kaggle-side HTTP worker: loads FLUX.2 Klein, serves POST /generate for `RemoteFluxKaggleProvider`
+- `datasets/kaggle_flux_worker.py` — Kaggle-upload copy of the worker (single source of truth: `notebooks/`)
+- `datasets/README.md` — Kaggle dataset upload + notebook attach + secrets guide
 
 ## Current state
 > ⚠️ UPDATE ONLY THIS SECTION when a checkpoint lands.
