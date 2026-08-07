@@ -670,9 +670,19 @@ async def evaluate_node(state: GenerationState, evaluator: VisionEvaluator) -> G
 
 
 def diagnose_failure_node(state: GenerationState) -> GenerationState:
-    """Turns failure_reason into a corrective instruction for the next attempt."""
-    reason = state["scores"]["failure_reason"] if state.get("scores") else "unknown"
-    state["corrective_instruction"] = f"Fix: {reason}"  # real impl: LLM-authored correction
+    """
+    Turns the failure_reason (plus any concrete VLM issues from the hybrid
+    evaluator) into a corrective instruction for the next attempt. Mock
+    evaluations carry no issues, so the mock path is unchanged.
+    """
+    scores = state.get("scores") or {}
+    reason = scores.get("failure_reason") or "unknown"
+    instruction = f"Fix: {reason}"
+    raw = (scores.get("raw_response") or {}).get("vlm") or {}
+    issues = raw.get("issues") or []
+    if issues:
+        instruction += " Issues: " + "; ".join(str(i) for i in issues[:3])
+    state["corrective_instruction"] = instruction
     return state
 
 

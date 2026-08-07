@@ -73,9 +73,16 @@ def get_image_provider() -> ImageGenerationProvider:
 
 
 def get_vision_evaluator() -> VisionEvaluator:
-    # Checkpoint 4 wires the real VLM + SigLIP + OCR evaluator; until then the
-    # mock evaluator is the only one, regardless of the generation provider.
-    return MockVisionEvaluator()
+    provider = os.environ.get("VISION_EVALUATOR_PROVIDER", "mock").lower()
+    if provider == "mock":
+        return MockVisionEvaluator()
+    if provider in ("hybrid", "real"):
+        # Real Gemini VLM + local SigLIP + OCR (Checkpoint 4). Requires
+        # GEMINI_API_KEY and the torch/transformers/rapidocr deps; never used
+        # by tests/CI (default stays mock).
+        from app.evaluation import HybridVisionEvaluator
+        return HybridVisionEvaluator()
+    raise ValueError(f"Unknown VISION_EVALUATOR_PROVIDER: {provider!r}")
 
 
 # ---------------------------------------------------------------------------

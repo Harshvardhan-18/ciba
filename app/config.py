@@ -35,6 +35,33 @@ class Settings(BaseSettings):
     # --- Image storage (V1: local disk, no S3) ---
     MEDIA_DIR: str = "media/generated"
 
+    # --- Vision evaluator (Checkpoint 4) ---
+    # "mock" | "hybrid". "hybrid" runs the real evaluation pipeline.
+    # Defaults to "mock" so dev/tests don't need heavy deps or API quota.
+    VISION_EVALUATOR_PROVIDER: str = "mock"
+
+    # Which backend runs the hybrid evaluation when VISION_EVALUATOR_PROVIDER=hybrid.
+    # "kaggle" (default, free) — VLM + SigLIP + OCR all run on the Kaggle eval
+    #   worker (notebooks/kaggle_eval_worker.py); product images come from the
+    #   Kaggle dataset paths. Requires KAGGLE_EVAL_GATEWAY_URL.
+    # "gemini" — VLM via the Gemini API, SigLIP + OCR local on the backend;
+    #   requires GEMINI_API_KEY and product images resolvable on the backend.
+    # Swap later by changing ONLY this value.
+    VLM_PROVIDER: str = "kaggle"
+
+    # Tunnel URL of the Kaggle eval worker (separate notebook/session + T4 from
+    # the generation worker). Empty by default so kaggle mode fails loudly
+    # rather than firing at nothing.
+    KAGGLE_EVAL_GATEWAY_URL: str = ""
+
+    # Local SigLIP model used for product-fidelity similarity scoring
+    # (gemini VLM mode only — kaggle mode runs SigLIP on the eval worker).
+    SIGLIP_MODEL_ID: str = "google/siglip-so400m-patch14-384"
+
+    # OCR: when overlay text IS detected, average confidence below this makes it
+    # a critical_text_error (garbled copy must fail the asset).
+    OCR_MIN_CONFIDENCE: float = 0.5
+
     # --- App ---
     DEBUG: bool = True
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
