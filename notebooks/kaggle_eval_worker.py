@@ -249,9 +249,23 @@ def _run_vlm(images: list[Image.Image], asset_spec: dict, brand_context: dict) -
 # SigLIP similarity
 # ---------------------------------------------------------------------------
 
-def _siglip_similarity(refs: list[Image.Image], gen: Image.Image) -> float:
-    import torch.nn.functional as F
+def _siglip_feature(model, inputs):
+    """Return a normalized image-embedding tensor from SigLIP.
 
+    get_image_features() returns a plain tensor in some transformers versions
+    and a BaseModelOutputWithPooling object in others — handle both.
+    """
+    out = model.get_image_features(**inputs)
+    if isinstance(out, torch.Tensor):
+        feat = out
+    elif getattr(out, "pooler_output", None) is not None:
+        feat = out.pooler_output
+    else:
+        feat = out.last_hidden_state.mean(dim=1)
+    return torch.nn.functional.normalize(feat, dim=-1)
+
+
+def _siglip_similarity(refs: list[Image.Image], gen: Image.Image) -> float:
     if not refs:
         print("[eval worker] no product refs; siglip=0.0")
         return 0.0
@@ -259,10 +273,8 @@ def _siglip_similarity(refs: list[Image.Image], gen: Image.Image) -> float:
     ref_inputs = processor(images=refs, return_tensors="pt").to(device)
     gen_inputs = processor(images=[gen], return_tensors="pt").to(device)
     with torch.no_grad():
-        ref_feat = model.get_image_features(**ref_inputs)
-        gen_feat = model.get_image_features(**gen_inputs)
-    ref_feat = F.normalize(ref_feat, dim=-1)
-    gen_feat = F.normalize(gen_feat, dim=-1)
+        ref_feat = _siglip_feature(model, ref_inputs)
+        gen_feat = _siglip_feature(model, gen_inputs)
     sim = float((ref_feat @ gen_feat.T).mean().item())
     return max(0.0, min(1.0, (sim + 1.0) / 2.0))
 

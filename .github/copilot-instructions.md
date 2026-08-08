@@ -40,7 +40,7 @@ Qdrant/vector retrieval, Kafka, Kubernetes/KEDA, S3/MinIO, OpenTelemetry/Prometh
 - `tests/test_e2e_checkpoint2.py` — full campaign flow with mocked generation/LLM
 - `tests/test_retry_loop.py` — 3-attempt generate/evaluate/diagnose loop with fake providers
 - `tests/test_hybrid_scores.py` — hybrid fidelity weights + hard-constraint pass (no real models)
-- `frontend/` — Next.js 16 + NextAuth v4 studio UI: `app/(studio)/` (brand/product setup, campaign brief, concept picker, asset gallery with per-attempt history + regenerate), `app/api/token/route.ts` mints HS256 JWTs for the backend, `app/lib/api.ts` client; `options.ts` uses custom HS256 JWS encode/decode so FastAPI's python-jose can verify
+- `frontend/` — Next.js 16 + NextAuth v4: public marketing landing at `/` (hero over `public/image.png`, pipeline, capability cards; redirects signed-in users to `/studio`), studio UI at `app/studio/` (brand/product setup, campaign brief, concept picker, asset gallery with per-attempt history + regenerate), `app/api/token/route.ts` mints HS256 JWTs, `app/lib/api.ts` client, reusable `--ld-*` landing design tokens in `globals.css` (colors sampled from `image.png`); `options.ts` uses custom HS256 JWS encode/decode so FastAPI's python-jose can verify
 - `notebooks/flux-quality-test-working.ipynb` — standalone FLUX.2 Klein quality test (not integrated)
 - `notebooks/kaggle_flux_worker.py` — Kaggle-side HTTP worker: loads FLUX.2 Klein, serves POST /generate for `RemoteFluxKaggleProvider`
 - `notebooks/kaggle_eval_worker.py` — Kaggle-side eval worker: SmolVLM2 + SigLIP + RapidOCR, serves POST /evaluate for `HybridVisionEvaluator` (VLM_PROVIDER=kaggle)

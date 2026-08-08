@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     # --- Kaggle (RemoteFluxKaggleProvider) ---
     # Base URL of the tunneled Kaggle HTTPS endpoint that serves FLUX.2 Klein
     # (e.g. an ngrok/cloudflared URL). Empty by default so the provider can
-    # never fire accidentally; set it only when a worker is actually running.
-    KAGGLE_GATEWAY_URL: str = "https://9ad3-34-86-175-178.ngrok-free.app"
+    # never fire accidentally; set it in .env when a worker is running.
+    KAGGLE_GATEWAY_URL: str = ""
     # Optional shared secret sent as `Authorization: Bearer <key>` on each request.
     KAGGLE_API_KEY: str = ""
     # FLUX on a T4 is slow (roughly 1-2 min per image at production resolution).
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     # Tunnel URL of the Kaggle eval worker (separate notebook/session + T4 from
     # the generation worker). Empty by default so kaggle mode fails loudly
     # rather than firing at nothing.
-    KAGGLE_EVAL_GATEWAY_URL: str = "https://afeb-34-26-181-124.ngrok-free.app"
+    KAGGLE_EVAL_GATEWAY_URL: str = ""
 
     # Local SigLIP model used for product-fidelity similarity scoring
     # (gemini VLM mode only — kaggle mode runs SigLIP on the eval worker).

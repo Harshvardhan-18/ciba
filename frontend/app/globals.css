@@ -537,3 +537,505 @@ textarea.input:focus {
   padding: 60px 0;
 }
 
+/* ============================================================================
+   LANDING (public marketing page) — black & white glassmorphism design system
+   ----------------------------------------------------------------------------
+   Pure monochrome palette: true black (#000) backgrounds, white (#fff) text,
+   grey midtones for muted copy. All panels use glassmorphism:
+     backdrop-filter: blur + rgba white fills + semi-transparent borders.
+   ========================================================================== */
+
+:root {
+  --ld-font-display: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --ld-font-sans: var(--font-inter), "Segoe UI", system-ui, sans-serif;
+
+  /* Monochrome surface palette */
+  --ld-bg:        #000000;
+  --ld-bg-soft:   #0a0a0a;
+  --ld-text:      #ffffff;
+  --ld-muted:     rgba(255, 255, 255, 0.52);
+  --ld-line:      rgba(255, 255, 255, 0.10);
+  --ld-line-soft: rgba(255, 255, 255, 0.06);
+
+  /* Glassmorphism surface tokens */
+  --ld-glass:        rgba(255, 255, 255, 0.055);
+  --ld-glass-hover:  rgba(255, 255, 255, 0.09);
+  --ld-glass-border: rgba(255, 255, 255, 0.13);
+  --ld-glass-blur:   16px;
+  --ld-glass-blur-sm: 10px;
+
+  /* Accent: white-on-dark pill (replaces colour CTA) */
+  --ld-accent:      #ffffff;
+  --ld-accent-deep: rgba(255, 255, 255, 0.88);
+}
+
+.landing {
+  font-family: var(--ld-font-sans);
+  background: var(--ld-bg);
+  color: var(--ld-text);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative; /* anchor for the absolute star canvas */
+}
+
+/* ============================================================
+   Nav — frosted glass bar
+   ============================================================ */
+
+.lp-nav {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px clamp(20px, 5vw, 56px);
+
+  /* Glass nav strip */
+  background: rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(var(--ld-glass-blur));
+  -webkit-backdrop-filter: blur(var(--ld-glass-blur));
+}
+
+.lp-wordmark {
+  font-family: var(--ld-font-display);
+  font-style: italic;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+}
+
+.lp-btn {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.85);
+  background: var(--ld-glass);
+  backdrop-filter: blur(var(--ld-glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--ld-glass-blur-sm));
+  border: 1px solid var(--ld-glass-border);
+  border-radius: 999px;
+  padding: 9px 20px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.lp-btn:hover {
+  background: var(--ld-glass-hover);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+/* ============================================================
+   Hero
+   ============================================================ */
+
+.lp-hero {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+/* Subtle dark vignette at the bottom so hero copy sits on a clean base */
+.lp-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 40%,
+    rgba(0, 0, 0, 0.55) 75%,
+    rgba(0, 0, 0, 0.80) 100%
+  );
+  z-index: 2;
+  pointer-events: none;
+}
+
+.lp-hero-media {
+  position: absolute;
+  margin-top: 120px; /* push the hero image down so the convergence glow is lower in the viewport */
+  inset: 0;
+  z-index: 1;
+}
+
+.lp-hero-img {
+  object-fit: cover;
+  /* center 20% shifts the image down, moving the convergence glow
+     lower in the viewport and opening up headroom for the tagline above */
+  object-position: center 20%;
+  filter: grayscale(1) contrast(1.08) brightness(0.9);
+}
+
+.lp-hero-content {
+  position: relative;
+  z-index: 10;
+  max-width: 0px;
+  width: 100%;
+  padding: 180px clamp(0px, 5vw, 56px) 96px;
+}
+
+.lp-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 22px;
+}
+
+.lp-h1 {
+  font-family: var(--ld-font-sans);
+  font-weight: 550;
+  font-size: clamp(38px, 6.2vw, 72px);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  max-width: 15ch;
+  color: #ffffff;
+}
+
+.lp-h1 em {
+  font-family: var(--ld-font-display);
+  font-style: italic;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.80);
+}
+
+.lp-sub {
+  margin-top: 24px;
+  max-width: 52ch;
+  font-size: clamp(16px, 1.6vw, 19px);
+  line-height: 1.65;
+  color: var(--ld-muted);
+}
+
+/* CTA: solid white pill with black text — max contrast */
+.lp-cta {
+  margin-top: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #000000;
+  background: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 30px;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.18s ease, box-shadow 0.2s ease;
+  box-shadow: 0 0 0 0 rgba(255,255,255,0);
+}
+
+.lp-cta:hover {
+  background: var(--ld-accent-deep);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(255, 255, 255, 0.18);
+}
+
+/* ============================================================
+   Below-fold sections
+   ============================================================ */
+
+.lp-section {
+  max-width: 1080px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 88px clamp(20px, 5vw, 56px);
+}
+
+.lp-section + .lp-section {
+  border-top: 1px solid var(--ld-line);
+}
+
+.lp-section-title {
+  font-family: var(--ld-font-sans);
+  font-weight: 600;
+  font-size: clamp(24px, 3.2vw, 34px);
+  letter-spacing: -0.015em;
+  max-width: 22ch;
+  color: #ffffff;
+}
+
+.lp-section-title em {
+  font-family: var(--ld-font-display);
+  font-style: italic;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.lp-section-sub {
+  margin-top: 16px;
+  max-width: 60ch;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--ld-muted);
+}
+
+/* ============================================================
+   Pipeline steps — glass cards in a row
+   ============================================================ */
+
+.lp-pipeline {
+  margin-top: 40px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.lp-step {
+  flex: 1 1 130px;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  /* Glassmorphism */
+  background: var(--ld-glass);
+  backdrop-filter: blur(var(--ld-glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--ld-glass-blur-sm));
+  border: 1px solid var(--ld-glass-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  transition: background 0.22s ease, border-color 0.22s ease, transform 0.22s ease;
+}
+
+.lp-step:hover {
+  background: var(--ld-glass-hover);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: translateY(-2px);
+}
+
+.lp-step .n {
+  font-family: var(--ld-font-display);
+  font-style: italic;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.38);
+  letter-spacing: 0.02em;
+}
+
+.lp-step .t {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  letter-spacing: 0.01em;
+}
+
+.lp-step .d {
+  font-size: 12px;
+  color: var(--ld-muted);
+  line-height: 1.45;
+}
+
+/* ============================================================
+   Capability cards — prominent glass panels
+   ============================================================ */
+
+.lp-cards {
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 18px;
+}
+
+.lp-card {
+  /* Glassmorphism */
+  background: var(--ld-glass);
+  backdrop-filter: blur(var(--ld-glass-blur));
+  -webkit-backdrop-filter: blur(var(--ld-glass-blur));
+  border: 1px solid var(--ld-glass-border);
+  border-radius: 20px;
+  padding: 28px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: background 0.22s ease, border-color 0.22s ease, transform 0.22s ease, box-shadow 0.22s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle top-edge highlight line */
+.lp-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
+}
+
+.lp-card:hover {
+  background: var(--ld-glass-hover);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: translateY(-3px);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+
+.lp-card .kicker {
+  font-family: var(--ld-font-display);
+  font-style: italic;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.42);
+  text-transform: uppercase;
+}
+
+.lp-card h3 {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #ffffff;
+  line-height: 1.25;
+}
+
+.lp-card p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ld-muted);
+}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+
+.lp-footer {
+  border-top: 1px solid var(--ld-line);
+  margin-top: auto;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(var(--ld-glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--ld-glass-blur-sm));
+}
+
+.lp-footer-inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 28px clamp(20px, 5vw, 56px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--ld-muted);
+}
+
+.lp-footer .lp-wordmark {
+  font-size: 18px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* ============================================================
+   Landing responsive
+   ============================================================ */
+
+@media (max-width: 720px) {
+  .lp-nav {
+    padding: 14px 20px;
+  }
+
+  .lp-hero {
+    min-height: 92svh;
+    align-items: flex-start;
+  }
+
+  .lp-hero-content {
+    padding-top: 140px;
+  }
+
+  .lp-h1 {
+    max-width: 11ch;
+  }
+
+  .lp-pipeline {
+    gap: 8px;
+  }
+
+  .lp-step {
+    flex: 1 1 42%;
+    min-width: 0;
+  }
+}
+
+/* ---------- Particle Wordmark ---------- */
+
+.particle-wordmark-wrapper {
+  position: top;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5; /* above bg image (z-index auto), below hero content (z-index 10) */
+}
+
+/*
+ * Visually hidden a11y text — accessible to screen readers and crawlers
+ * but invisible on screen (canvas is the visual representation).
+ */
+.particle-wordmark-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  /* Screen readers still announce this element */
+}
+
+.particle-wordmark-canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* width/height are set by JS to match hero dimensions */
+  pointer-events: none;
+}
+
+/* When reduced motion is preferred, ensure the wrapper is hidden entirely
+   so the canvas placeholder doesn't flash. The static a11y text remains. */
+@media (prefers-reduced-motion: reduce) {
+  .particle-wordmark-canvas {
+    display: none;
+  }
+}
+
+/* "Elevate Your" tagline — positioned + revealed by JS after convergence math */
+.particle-wordmark-tagline {
+  position: absolute;
+  white-space: nowrap;
+  font-family: var(--ld-font-display);
+  font-weight: 350;
+  font-style: italic;
+  letter-spacing: -0.025em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.88);
+  pointer-events: none;
+  /* start invisible; JS sets opacity to 1 after layout is computed */
+  opacity: 0;
+  transition: opacity 0.6s ease 0.1s;
+}
+
+.particle-wordmark-tagline.is-visible {
+  opacity: 1;
+}
+
+/* Star field canvas — sits behind all landing content, shows through
+   non-opaque section backgrounds; hero image covers it naturally */
+.landing-stars-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  display: block;
+}
+
