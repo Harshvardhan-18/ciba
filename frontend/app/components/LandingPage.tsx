@@ -50,7 +50,7 @@ export default function LandingPage() {
       <section className="lp-hero">
         <div className="lp-hero-media">
           <Image
-            src="/bg.png"
+            src="/background.png"
             alt="Campaign creative built by CIBA"
             fill
             priority

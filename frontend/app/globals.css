@@ -611,10 +611,10 @@ textarea.input:focus {
 
 .lp-btn {
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255);
   background: var(--ld-glass);
   backdrop-filter: blur(var(--ld-glass-blur-sm));
   -webkit-backdrop-filter: blur(var(--ld-glass-blur-sm));
