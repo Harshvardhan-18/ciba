@@ -23,11 +23,11 @@ def test_product_fidelity_uses_frozen_weights():
 
 
 def test_low_product_fidelity_fails_despite_pretty_scores():
-    # Beautiful ad (overall ~0.96) but product_fidelity 0.91 < 0.92 -> must FAIL.
+    # Beautiful ad (overall ~0.93) but product_fidelity 0.84 < 0.85 -> must FAIL.
     # This isolates the fidelity hard gate: overall is above threshold, fidelity
     # alone is below it.
-    s = compute_hybrid_scores(0.90, 0.90, 0.94, 1.0, 1.0, 1.0, critical_text_error=False)
-    assert s["product_fidelity"] == pytest.approx(0.91)
+    s = compute_hybrid_scores(0.82, 0.82, 0.90, 1.0, 1.0, 1.0, critical_text_error=False)
+    assert s["product_fidelity"] == pytest.approx(0.84)
     assert s["overall_score"] > 0.90
     passed, reason = evaluate_pass(s)
     assert passed is False

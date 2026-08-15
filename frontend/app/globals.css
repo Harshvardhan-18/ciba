@@ -516,6 +516,22 @@ textarea.input:focus {
   white-space: pre-wrap;
 }
 
+.progress-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-size: 13.5px;
+  margin-bottom: 18px;
+}
+
+.progress-banner .spinner {
+  border-top-color: var(--accent);
+}
+
 .muted {
   color: var(--muted);
 }

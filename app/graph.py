@@ -17,15 +17,15 @@ Responsibilities stay separated per the frozen constitution:
 
 LLM Provider (concept generation)
 ----------------------------------
-Controlled by env var LLM_PROVIDER (default: "gemini").
+Controlled by env var LLM_PROVIDER (default: "groq").
 Supported:
-  "gemini" — Google Gemini Flash via google-generativeai SDK (free tier,
-              requires GEMINI_API_KEY env var). Chosen for Checkpoint 2
-              because it has a generous free tier, structured JSON output
-              support, and is already in the Google/Kaggle ecosystem the
-              rest of the project targets. Swappable to any other provider
-              by implementing a parallel LLMProvider abstract class
-              (not added yet — one provider is sufficient for V1).
+  "groq" — Groq (llama-3.3-70b-versatile by default) via the groq SDK.
+            Fast + free tier with good structured JSON output. This is the
+            current default for the Director's reasoning.
+  "gemini" — Google Gemini Flash via google-generativeai SDK (requires
+              GEMINI_API_KEY env var). Kept as a swappable option.
+Swappable to any other provider by implementing a parallel LLMProvider
+abstract class (not added yet — one provider is sufficient for V1).
 """
 from __future__ import annotations
 
@@ -213,8 +213,9 @@ class MockVisionEvaluator(VisionEvaluator):
     async def evaluate(self, original_product_images, generated_image, asset_spec, brand_context) -> dict:
         return {
             "vlm_product_score": 0.95, "siglip_similarity": 0.93, "ocr_text_score": 1.0,
-            # product_fidelity must be >= 0.92 (PASS_THRESHOLDS); was 0.9 which caused
-            # evaluate_pass to return False and assets to land in MANUAL_REVIEW.
+            # product_fidelity must be >= PASS_THRESHOLDS["product_fidelity"] (0.85);
+            # was 0.9 vs the old 0.92 threshold which failed eval and landed assets
+            # in MANUAL_REVIEW.
             "product_fidelity": 0.93, "brand_consistency": 0.92, "composition_score": 0.91,
             "prompt_alignment": 0.92, "overall_score": 0.92,
             "critical_text_error": False, "passed": True, "failure_reason": None,
@@ -223,9 +224,13 @@ class MockVisionEvaluator(VisionEvaluator):
 
 # Pass thresholds — hard constraints on top of the weighted average, per spec.
 # A beautiful image with a mangled product must still fail.
+# product_fidelity: real FLUX scene-ads (styled composition, product re-lit/
+# re-scaled vs the clean product shot) score ~0.81-0.92 on SigLIP/VLM; 0.92
+# sent every asset to MANUAL_REVIEW. 0.85 still rejects visibly mangled
+# products while letting good scene-ads pass (owner decision, 2026-08-15).
 PASS_THRESHOLDS = {
     "overall_score": 0.90,
-    "product_fidelity": 0.92,
+    "product_fidelity": 0.85,
     "brand_consistency": 0.85,
 }
 
@@ -235,12 +240,15 @@ def evaluate_pass(scores: dict) -> tuple[bool, str | None]:
         return False, "critical_text_error"
     for field, threshold in PASS_THRESHOLDS.items():
         if scores[field] < threshold:
-            return False, f"{field}_below_threshold ({scores[field]:.2f} < {threshold})"
+            # 3 decimals so a real 0.9199 doesn't masquerade as "0.92 < 0.92".
+            return False, f"{field}_below_threshold ({scores[field]:.3f} < {threshold})"
     return True, None
 
 
 # ---------------------------------------------------------------------------
-# LLM helper — Gemini Flash via google-generativeai SDK
+# LLM helpers — Groq (default) via the groq SDK; Gemini Flash via the
+# google-generativeai SDK. Both return the raw concepts text, which is then
+# parsed/validated by _parse_llm_json / _validate_concepts.
 # ---------------------------------------------------------------------------
 
 # JSON schema the Director LLM must produce for each concept.
@@ -405,6 +413,38 @@ async def _call_gemini(user_prompt: str) -> list[dict]:
     return _parse_llm_json(response.text)
 
 
+async def _call_groq(user_prompt: str) -> list[dict]:
+    """
+    Calls Groq (llama-3.3-70b-versatile by default) with the Director's
+    system prompt. Controlled by LLM_PROVIDER=groq + GROQ_API_KEY env vars;
+    GROQ_MODEL overrides the model.
+
+    Uses the official `groq` SDK (OpenAI-compatible chat completions). Groq's
+    forced `json_object` response_format only emits top-level OBJECTS, but the
+    Director's contract is a top-level ARRAY of concepts — so we rely on the
+    system prompt plus the existing _parse_llm_json / _validate_concepts /
+    retry-on-malformed path instead of response_format.
+    """
+    from groq import AsyncGroq
+
+    api_key = settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY env var is required for LLM_PROVIDER=groq")
+
+    client = AsyncGroq(api_key=api_key)
+    chat_completion = await client.chat.completions.create(
+        model=settings.GROQ_MODEL,
+        temperature=0.9,
+        messages=[
+            {"role": "system", "content": DIRECTOR_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    text = chat_completion.choices[0].message.content or ""
+    logger.info("_call_groq: model=%s", settings.GROQ_MODEL)
+    return _parse_llm_json(text)
+
+
 # ---------------------------------------------------------------------------
 # Graph 1: Director — campaign brief -> 2-3 CreativeConcepts
 # ---------------------------------------------------------------------------
@@ -419,10 +459,11 @@ class DirectorState(TypedDict):
 
 async def generate_concepts_node(state: DirectorState) -> DirectorState:
     """
-    Single LLM call (Gemini Flash) producing 2-3 CreativeConcept payloads
-    (name, description, visual_dna, ad_copy, rationale) as structured JSON.
+    Single LLM call (Groq by default, Gemini Flash as a swappable option)
+    producing 2-3 CreativeConcept payloads (name, description, visual_dna,
+    ad_copy, rationale) as structured JSON.
 
-    LLM provider is determined by LLM_PROVIDER env var (default: "gemini").
+    LLM provider is determined by LLM_PROVIDER env var (default: "groq").
     Validates the JSON output against the required schema; retries once on
     malformed output before raising.
 
@@ -431,16 +472,20 @@ async def generate_concepts_node(state: DirectorState) -> DirectorState:
     BaseModel.copy. The route layer translates ad_copy -> copy before
     persisting to DB.
     """
-    llm_provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    llm_provider = os.environ.get("LLM_PROVIDER", "groq").lower()
     user_prompt = _build_director_user_prompt(state)
 
     last_error: Exception | None = None
     for attempt in range(2):  # 1 initial + 1 retry on malformed output
         try:
-            if llm_provider == "gemini":
+            if llm_provider == "groq":
+                raw = await _call_groq(user_prompt)
+            elif llm_provider == "gemini":
                 raw = await _call_gemini(user_prompt)
             else:
-                raise RuntimeError(f"Unsupported LLM_PROVIDER: {llm_provider!r}. Supported: 'gemini'")
+                raise RuntimeError(
+                    f"Unsupported LLM_PROVIDER: {llm_provider!r}. Supported: 'groq', 'gemini'"
+                )
 
             concepts = _validate_concepts(raw)
             state["concepts"] = concepts
@@ -538,13 +583,10 @@ def _build_generation_prompt(
     """
     comp = _PLACEMENT_COMPOSITION.get(placement_key, {})
     dna = concept.get("visual_dna", {})
-    # Use ad_copy if present (graph layer), fall back to copy (DB layer)
-    copy_data = concept.get("ad_copy") or concept.get("copy", {})
 
     product_name = product_context.get("name", "the product")
     palette = ", ".join(dna.get("palette", []))
     mood = ", ".join(dna.get("mood", []))
-    headline = copy_data.get("headline", "")
 
     parts = [
         f"Product photography ad for {product_name}.",
@@ -556,7 +598,11 @@ def _build_generation_prompt(
         f"Composition: {comp.get('framing', '')}.",
         f"Product placement: {comp.get('product_position', 'center')}, scale {comp.get('product_scale', 'large')}.",
         f"Safe zone for copy text: {comp.get('copy_safe_area', 'top 20%')}.",
-        f'Headline text overlay: "{headline}".' if headline else "",
+        # Copy/headlines are overlaid in post-production (copy_safe_area reserves
+        # the space). Asking FLUX to render text at 4 inference steps produces
+        # garbled text that fails the OCR legibility check (critical_text_error)
+        # and kills the asset — so keep the generated frame text-free.
+        "Do not render any text, words, logos, or typography in the image.",
         "Preserve product identity exactly — reference image conditioning required.",
         "Photorealistic, high production value, ready for publication.",
     ]
@@ -631,6 +677,7 @@ class GenerationState(TypedDict):
     generated_image_url: str | None
     scores: dict | None
     prompt_used: str | None              # exact prompt sent (incl. correction addendum)
+    infra_error: str | None              # real provider exception (for INFRA_FAILED)
     outcome: Literal["approved", "retry", "manual_review", "infra_failed"] | None
 
 
@@ -647,8 +694,10 @@ async def generate_image_node(state: GenerationState, provider: ImageGenerationP
             width=state["asset_spec"]["width"],
             height=state["asset_spec"]["height"],
         )
-    except Exception:
+    except Exception as exc:
+        # Preserve the real message so INFRA_FAILED rows are actually diagnosable.
         state["outcome"] = "infra_failed"
+        state["infra_error"] = str(exc)
     return state
 
 

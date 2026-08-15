@@ -5,6 +5,8 @@ Mounts the router from app/routes.py. Async lifespan context manager is used
 (the recommended pattern in FastAPI 0.95+) so there's a clean place to add
 startup/shutdown hooks later (e.g. warming LangGraph graphs, closing DB pools).
 """
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -15,12 +17,42 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.routes import router
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — nothing needed yet; Alembic handles migrations separately.
-    yield
-    # Shutdown — nothing needed yet.
+    from app.routes import recover_stuck_generation
+
+    # Startup — resume any generation interrupted by a restart/reload.
+    try:
+        await recover_stuck_generation()
+    except Exception:
+        logger.exception("lifespan: recovery sweep failed (non-fatal)")
+
+    # Self-healing loop: re-schedule campaigns/assets stuck mid-generation
+    # (e.g. a uvicorn --reload killed the tasks) every 20s, so a run never
+    # stays stuck until the next manual restart. Dedup is handled by the
+    # in-process guard sets in routes.py.
+    stop = asyncio.Event()
+
+    async def recovery_loop() -> None:
+        while not stop.is_set():
+            try:
+                await recover_stuck_generation()
+            except Exception:
+                logger.exception("recovery loop iteration failed (non-fatal)")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=20)
+            except asyncio.TimeoutError:
+                pass
+
+    task = asyncio.create_task(recovery_loop())
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
 
 
 app = FastAPI(

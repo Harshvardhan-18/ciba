@@ -20,12 +20,13 @@ layer translates between them when reading from / writing to the DB.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +53,86 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3  # 1 initial + 2 regenerations, per frozen retry policy
+
+
+# ---------------------------------------------------------------------------
+# In-process scheduling guards
+#
+# Generation/director loops run as detached asyncio tasks rather than one-shot
+# FastAPI BackgroundTasks. These sets dedupe so the periodic recovery sweep
+# never schedules the same asset/campaign twice while it is already running in
+# this process. A process restart (uvicorn --reload) clears them, which is
+# correct: any in-flight task died with the old process, so recovery re-schedules
+# from the DB state on the next sweep.
+# ---------------------------------------------------------------------------
+_running_generation: set[uuid.UUID] = set()
+_running_director: set[uuid.UUID] = set()
+
+# The Kaggle FLUX worker is a single T4: it can only run ONE generation at a
+# time. Running the 3 asset loops concurrently would fire 3 parallel pipe()
+# calls and OOM the GPU, killing the process mid-response ("server
+# disconnected"). Serialize the whole generation loop so only one runs at a
+# time — correct, and the eval worker (separate T4) still overlaps fine.
+_generation_semaphore = asyncio.Semaphore(1)
+
+
+def _schedule_director(
+    campaign_id: uuid.UUID,
+    brand_context: dict,
+    product_context: dict,
+    brief_text: str,
+    target_audience: str | None,
+    session_factory=None,
+) -> bool:
+    """Schedule _run_director once per campaign (deduped in-process)."""
+    if campaign_id in _running_director:
+        return False
+    _running_director.add(campaign_id)
+
+    async def _guarded() -> None:
+        try:
+            await _run_director(
+                campaign_id=campaign_id,
+                brand_context=brand_context,
+                product_context=product_context,
+                brief_text=brief_text,
+                target_audience=target_audience,
+                session_factory=session_factory,
+            )
+        finally:
+            _running_director.discard(campaign_id)
+
+    asyncio.create_task(_guarded())
+    return True
+
+
+def _schedule_generation_loop(
+    asset_id: uuid.UUID,
+    product_images: list[str],
+    brand_context: dict,
+    is_manual_retry: bool = False,
+    session_factory=None,
+) -> bool:
+    """Schedule _run_generation_loop once per asset (deduped in-process)."""
+    if asset_id in _running_generation:
+        return False
+    _running_generation.add(asset_id)
+
+    async def _guarded() -> None:
+        try:
+            async with _generation_semaphore:
+                await _run_generation_loop(
+                    asset_id=asset_id,
+                    product_images=product_images,
+                    brand_context=brand_context,
+                    is_manual_retry=is_manual_retry,
+                    session_factory=session_factory,
+                )
+        finally:
+            _running_generation.discard(asset_id)
+
+    asyncio.create_task(_guarded())
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +306,6 @@ class CampaignOut(BaseModel):
 @router.post("/campaigns", response_model=CampaignOut, status_code=202)
 async def create_campaign(
     payload: CampaignCreate,
-    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -279,8 +359,7 @@ async def create_campaign(
     # own DB session (background tasks run in a separate session).
     await db.commit()
 
-    background.add_task(
-        _run_director,
+    _schedule_director(
         campaign_id=campaign_id,
         brand_context=brand_context,
         product_context=product_context,
@@ -363,7 +442,6 @@ class SelectConceptRequest(BaseModel):
 async def select_concept(
     campaign_id: uuid.UUID,
     payload: SelectConceptRequest,
-    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -465,10 +543,9 @@ async def select_concept(
     # Commit explicitly so asset rows are visible to background task sessions.
     await db.commit()
 
-    # Schedule generation loop for each asset
+    # Schedule generation loop for each asset (detached tasks, deduped).
     for asset_id in asset_ids:
-        background.add_task(
-            _run_generation_loop,
+        _schedule_generation_loop(
             asset_id=asset_id,
             product_images=product.product_images,
             brand_context=brand_context,
@@ -492,6 +569,7 @@ class AttemptOut(BaseModel):
     attempt_number: int
     image_url: str | None
     infra_failed: bool
+    infra_error: str | None = None
     evaluation: EvaluationOut | None
 
 
@@ -553,6 +631,7 @@ async def list_assets(
                 attempt_number=attempt.attempt_number,
                 image_url=attempt.image_url,
                 infra_failed=attempt.infra_failed,
+                infra_error=attempt.infra_error,
                 evaluation=eval_out,
             ))
         out.append(AssetOut(
@@ -570,16 +649,15 @@ async def list_assets(
 async def manual_regenerate(
     campaign_id: uuid.UUID,
     asset_id: uuid.UUID,
-    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Manual override for assets stuck in MANUAL_REVIEW. Schedules a fresh
-    generation pass (is_manual_retry=True, up to MAX_ATTEMPTS new attempts on
-    top of existing history) so the user can force another shot. Distinct
-    from the automatic retry loop, which caps at MAX_ATTEMPTS total quality
-    attempts per asset.
+    Manual override for assets stuck in MANUAL_REVIEW or INFRA_FAILED (e.g. a
+    Kaggle worker restarted mid-run). Schedules a fresh generation pass
+    (is_manual_retry=True, up to MAX_ATTEMPTS new attempts on top of existing
+    history) so the user can force another shot. Distinct from the automatic
+    retry loop, which caps at MAX_ATTEMPTS total quality attempts per asset.
     """
     # Verify campaign ownership
     campaign = (await db.execute(
@@ -596,10 +674,13 @@ async def manual_regenerate(
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found.")
 
-    if asset.status != AssetStatus.MANUAL_REVIEW:
+    if asset.status not in (AssetStatus.MANUAL_REVIEW, AssetStatus.INFRA_FAILED):
         raise HTTPException(
             status_code=409,
-            detail=f"Asset is not in manual_review state (current: {asset.status.value}).",
+            detail=(
+                f"Asset is not in manual_review/infra_failed state "
+                f"(current: {asset.status.value})."
+            ),
         )
 
     brand = (await db.execute(select(Brand).where(Brand.id == campaign.brand_id))).scalar_one()
@@ -611,14 +692,12 @@ async def manual_regenerate(
         "fonts": brand.fonts, "tone": brand.tone,
     }
 
-    from app.database import get_session_factory as _gsf
-    background.add_task(
-        _run_generation_loop,
+    _schedule_generation_loop(
         asset_id=asset_id,
         product_images=product.product_images,
         brand_context=brand_context,
         is_manual_retry=True,
-        session_factory=_gsf(),
+        session_factory=get_session_factory(),
     )
 
     # Return current state (async — client polls)
@@ -627,6 +706,7 @@ async def manual_regenerate(
             attempt_number=a.attempt_number,
             image_url=a.image_url,
             infra_failed=a.infra_failed,
+            infra_error=a.infra_error,
             evaluation=EvaluationOut(
                 overall_score=a.evaluation.overall_score,
                 product_fidelity=a.evaluation.product_fidelity,
@@ -798,6 +878,11 @@ async def _run_generation_loop(
                 # number (it doesn't consume the quality budget).
                 if gen_state["outcome"] == "infra_failed":
                     consecutive_infra += 1
+                    infra_error = gen_state.get("infra_error") or "Provider raised an exception"
+                    logger.error(
+                        "_run_generation_loop: asset=%s attempt=%d INFRA failure (consecutive=%d): %s",
+                        asset_id, attempt_number, consecutive_infra, infra_error,
+                    )
                     db.add(GenerationAttempt(
                         asset_id=asset_id,
                         attempt_number=attempt_number,
@@ -806,7 +891,7 @@ async def _run_generation_loop(
                         image_url=None,
                         provider=provider_name,
                         infra_failed=True,
-                        infra_error="Provider raised an exception",
+                        infra_error=infra_error,
                     ))
                     await db.flush()
                     if consecutive_infra >= MAX_ATTEMPTS:
@@ -899,3 +984,107 @@ async def _maybe_complete_campaign(db: AsyncSession, campaign_id: uuid.UUID) -> 
         campaign.status = CampaignStatus.COMPLETE
         await db.commit()
         logger.info("_maybe_complete_campaign: campaign=%s -> complete", campaign_id)
+
+
+async def recover_stuck_generation(session_factory=None) -> int:
+    """
+    Startup recovery sweep.
+
+    Generation runs as FastAPI BackgroundTasks; in dev these are single-shot
+    and unmonitored, so a uvicorn --reload (or crash) kills them mid-run and
+    nothing ever re-queues them — leaving a campaign stuck in
+    GENERATING_CONCEPTS / GENERATING_ASSETS with pending rows forever.
+
+    On every startup this finds those campaigns and re-schedules the work:
+      - GENERATING_CONCEPTS: if concepts exist, just advance to
+        concepts_ready (Director finished but the status flip was lost);
+        otherwise re-run the Director.
+      - GENERATING_ASSETS: re-run the generation loop for any asset still in
+        PENDING/GENERATING. Terminal assets (APPROVED / MANUAL_REVIEW /
+        INFRA_FAILED) are deliberately left alone.
+
+    Safe to run on every startup (idempotent — completed work is skipped).
+    Returns the number of units re-scheduled.
+    """
+    if session_factory is None:
+        from app.database import AsyncSessionLocal
+        session_factory = AsyncSessionLocal
+
+    re_scheduled = 0
+    async with session_factory() as db:
+        # --- 1) Stuck concept generation (Director killed mid-run) ---
+        concept_campaigns = (await db.execute(
+            select(Campaign).where(Campaign.status == CampaignStatus.GENERATING_CONCEPTS)
+        )).scalars().all()
+        for campaign in concept_campaigns:
+            concept_count = len((await db.execute(
+                select(CreativeConcept).where(CreativeConcept.campaign_id == campaign.id)
+            )).scalars().all())
+            if concept_count > 0:
+                # Director finished but the status flip never committed.
+                campaign.status = CampaignStatus.CONCEPTS_READY
+                await db.commit()
+                logger.warning(
+                    "recover_stuck_generation: campaign=%s had %d concepts, advanced to concepts_ready",
+                    campaign.id, concept_count,
+                )
+            else:
+                brand = (await db.execute(select(Brand).where(Brand.id == campaign.brand_id))).scalar_one()
+                product = (await db.execute(select(Product).where(Product.id == campaign.product_id))).scalar_one()
+                brand_context = {
+                    "name": brand.name, "description": brand.description,
+                    "primary_colors": brand.primary_colors,
+                    "secondary_colors": brand.secondary_colors,
+                    "fonts": brand.fonts, "tone": brand.tone,
+                }
+                product_context = {
+                    "name": product.name, "description": product.description,
+                    "image_urls": product.product_images,
+                }
+                _schedule_director(
+                    campaign_id=campaign.id,
+                    brand_context=brand_context,
+                    product_context=product_context,
+                    brief_text=campaign.brief_text,
+                    target_audience=campaign.target_audience,
+                    session_factory=session_factory,
+                )
+                re_scheduled += 1
+                logger.warning("recover_stuck_generation: re-running director for campaign=%s", campaign.id)
+
+        # --- 2) Stuck asset generation (generation loop killed mid-run) ---
+        asset_campaigns = (await db.execute(
+            select(Campaign).where(Campaign.status == CampaignStatus.GENERATING_ASSETS)
+        )).scalars().all()
+        for campaign in asset_campaigns:
+            assets = (await db.execute(
+                select(CreativeAsset).where(CreativeAsset.campaign_id == campaign.id)
+            )).scalars().all()
+            stuck = [a for a in assets if a.status in (AssetStatus.PENDING, AssetStatus.GENERATING)]
+            if not stuck:
+                continue
+
+            brand = (await db.execute(select(Brand).where(Brand.id == campaign.brand_id))).scalar_one()
+            product = (await db.execute(select(Product).where(Product.id == campaign.product_id))).scalar_one()
+            brand_context = {
+                "name": brand.name, "description": brand.description,
+                "primary_colors": brand.primary_colors,
+                "secondary_colors": brand.secondary_colors,
+                "fonts": brand.fonts, "tone": brand.tone,
+            }
+            for asset in stuck:
+                _schedule_generation_loop(
+                    asset_id=asset.id,
+                    product_images=product.product_images,
+                    brand_context=brand_context,
+                    session_factory=session_factory,
+                )
+                re_scheduled += 1
+                logger.warning(
+                    "recover_stuck_generation: re-scheduling asset=%s (status=%s)",
+                    asset.id, asset.status,
+                )
+
+    if re_scheduled:
+        logger.warning("recover_stuck_generation: re-scheduled %d stuck unit(s)", re_scheduled)
+    return re_scheduled

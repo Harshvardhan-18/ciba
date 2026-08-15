@@ -82,6 +82,7 @@ function Studio() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [generating, setGenerating] = useState(false);
 
   const go = (s: Step) => {
     setStep(s);
@@ -92,6 +93,27 @@ function Studio() {
     setBrand(b);
     setProduct(p);
     go("brief");
+  };
+
+  // Poll assets every 3s and surface the live state as it updates, so the UI
+  // shows per-asset progress (queued / generating / approved) instead of a
+  // silent spinner. Resolves when every asset reaches a terminal state.
+  const pollAssetsLive = async (campaignId: string): Promise<Asset[]> => {
+    const started = Date.now();
+    for (;;) {
+      const list = await getAssets(campaignId);
+      setAssets(list);
+      if (
+        list.length > 0 &&
+        list.every((a) => TERMINAL_ASSET_STATUSES.includes(a.status))
+      ) {
+        return list;
+      }
+      if (Date.now() - started > 30 * 60 * 1000) {
+        throw new Error("Timed out waiting for the backend to finish.");
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
   };
 
   const handleBrief = async (c: Campaign) => {
@@ -119,17 +141,17 @@ function Studio() {
     if (!campaign) return;
     setError(null);
     setBusy(true);
+    setGenerating(true);
     try {
       await selectConcept(campaign.id, conceptId);
-      const result = await poll(
-        () => getAssets(campaign.id),
-        (list) => list.length > 0 && list.every((a) => TERMINAL_ASSET_STATUSES.includes(a.status))
-      );
+      setStep("assets"); // jump to the live generation view immediately
+      const result = await pollAssetsLive(campaign.id);
       setAssets(result);
       go("assets");
     } catch (e) {
       setError(errMsg(e));
     } finally {
+      setGenerating(false);
       setBusy(false);
     }
   };
@@ -138,16 +160,14 @@ function Studio() {
     if (!campaign) return;
     setError(null);
     setBusy(true);
+    setGenerating(true);
     try {
       await regenerateAsset(campaign.id, assetId);
-      const result = await poll(
-        () => getAssets(campaign.id),
-        (list) => list.length > 0 && list.every((a) => TERMINAL_ASSET_STATUSES.includes(a.status))
-      );
-      setAssets(result);
+      await pollAssetsLive(campaign.id);
     } catch (e) {
       setError(errMsg(e));
     } finally {
+      setGenerating(false);
       setBusy(false);
     }
   };
@@ -200,7 +220,13 @@ function Studio() {
       )}
       {step === "concepts" && <ConceptsPanel concepts={concepts} busy={busy} onSelect={handleSelectConcept} />}
       {step === "assets" && (
-        <AssetsPanel assets={assets} busy={busy} onRegenerate={handleRegenerate} onRestart={restart} />
+        <AssetsPanel
+          assets={assets}
+          busy={busy}
+          generating={generating}
+          onRegenerate={handleRegenerate}
+          onRestart={restart}
+        />
       )}
     </div>
   );
@@ -213,11 +239,12 @@ function SetupPanel({ onComplete }: { onComplete: (b: Brand, p: Product) => void
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [bName, setBName] = useState("");
-  const [bTone, setBTone] = useState("");
-  const [pName, setPName] = useState("");
-  const [pDesc, setPDesc] = useState("");
-  const [paths, setPaths] = useState("");
+  // Prefilled with the last-used values so you don't have to re-type on every run.
+  const [bName, setBName] = useState("Souled Store");
+  const [bTone, setBTone] = useState("Modern");
+  const [pName, setPName] = useState("Signature sneakers");
+  const [pDesc, setPDesc] = useState("Beige sneakers");
+  const [paths, setPaths] = useState("/kaggle/input/datasets/bruhhv1/sneakers/p1.avif");
 
   const createBrandHandler = async () => {
     setError(null);
@@ -344,8 +371,9 @@ function BriefPanel({
   onSubmitted: (c: Campaign) => void;
   onBack: () => void;
 }) {
-  const [brief, setBrief] = useState("");
-  const [audience, setAudience] = useState("");
+  // Prefilled with the last-used values so you don't have to re-type on every run.
+  const [brief, setBrief] = useState("Launch a campaign for our latest beige sneakers.");
+  const [audience, setAudience] = useState("GenZ 18-25");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -484,6 +512,8 @@ function statusBadge(status: string) {
       return <span className="badge badge-warn">Manual review</span>;
     case "infra_failed":
       return <span className="badge badge-bad">Infra failed</span>;
+    case "generating":
+      return <span className="badge">Generating…</span>;
     default:
       return <span className="badge">{status}</span>;
   }
@@ -501,18 +531,27 @@ function AssetImage({ url, label }: { url: string | null; label: string }) {
 function AssetsPanel({
   assets,
   busy,
+  generating,
   onRegenerate,
   onRestart,
 }: {
   assets: Asset[];
   busy: boolean;
+  generating: boolean;
   onRegenerate: (assetId: string) => void;
   onRestart: () => void;
 }) {
+  const doneCount = assets.filter((a) => TERMINAL_ASSET_STATUSES.includes(a.status)).length;
+  const allDone = assets.length > 0 && doneCount === assets.length;
+
   if (!assets.length) {
     return (
       <div className="panel center">
-        <span className="spinner" /> Waiting for generation…
+        <span className="spinner" />
+        <div style={{ marginTop: 10, maxWidth: 420 }}>
+          Generating 3 assets — each takes ~1–2 min on the FLUX worker. This view
+          updates live as attempts land.
+        </div>
       </div>
     );
   }
@@ -522,9 +561,19 @@ function AssetsPanel({
       <div className="section-sub">
         Every attempt is stored — this is the “system improved its output” screen.
       </div>
+      {!allDone && (
+        <div className="progress-banner">
+          <span className="spinner" />
+          <span>
+            Generating <strong>{doneCount}/{assets.length}</strong> assets
+            {generating ? " — attempts appear below as they complete." : "…"}
+          </span>
+        </div>
+      )}
       <div className="asset-grid">
         {assets.map((asset) => {
           const latest = asset.attempts[asset.attempts.length - 1];
+          const terminal = TERMINAL_ASSET_STATUSES.includes(asset.status);
           return (
             <div className="asset-card" key={asset.id}>
               <div className="asset-head">
@@ -534,13 +583,20 @@ function AssetsPanel({
               <div className="asset-media">
                 <AssetImage url={mediaUrl(latest?.image_url ?? null)} label={asset.placement} />
               </div>
-              {asset.attempts.map((a) => {
+              {asset.attempts.map((a, idx) => {
                 const ev = a.evaluation;
                 const url = mediaUrl(a.image_url);
+                // Infra failures don't consume the quality-attempt number, so
+                // several rows can share attempt_number — make the key unique
+                // (and the label legible) by tagging consecutive duplicates.
+                const dup = idx > 0 && a.attempt_number === asset.attempts[idx - 1].attempt_number;
+                const label = a.infra_failed && dup
+                  ? `Attempt ${a.attempt_number} · infra retry ${idx + 1}`
+                  : `Attempt ${a.attempt_number}`;
                 return (
-                  <div className="attempt" key={a.attempt_number}>
+                  <div className="attempt" key={`${a.attempt_number}-${idx}`}>
                     <div className="attempt-head">
-                      <strong>Attempt {a.attempt_number}</strong>
+                      <strong>{label}</strong>
                       <span>
                         {a.infra_failed
                           ? "infra failure"
@@ -551,6 +607,9 @@ function AssetsPanel({
                             : "evaluating…"}
                       </span>
                     </div>
+                    {a.infra_failed && a.infra_error && (
+                      <div className="attempt-meta attempt-reason">{a.infra_error}</div>
+                    )}
                     {ev && (
                       <>
                         <div className="small" style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
@@ -576,7 +635,14 @@ function AssetsPanel({
                   </div>
                 );
               })}
-              {asset.status === "manual_review" && (
+              {!terminal && (
+                <div className="small muted" style={{ margin: "6px 0 0" }}>
+                  {asset.status === "generating"
+                    ? "Rendering + evaluating…"
+                    : "Queued — waiting for the FLUX worker…"}
+                </div>
+              )}
+              {(asset.status === "manual_review" || asset.status === "infra_failed") && (
                 <div className="asset-actions">
                   <button className="btn btn-block" disabled={busy} onClick={() => onRegenerate(asset.id)}>
                     {busy ? "Regenerating…" : "Regenerate"}

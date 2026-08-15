@@ -54,6 +54,7 @@ export type Attempt = {
   attempt_number: number;
   image_url: string | null;
   infra_failed: boolean;
+  infra_error: string | null;
   evaluation: {
     overall_score: number;
     product_fidelity: number;
@@ -161,7 +162,9 @@ export const regenerateAsset = (campaignId: string, assetId: string) =>
 export async function poll<T>(
   fn: () => Promise<T>,
   done: (value: T) => boolean,
-  { interval = 2000, timeout = 10 * 60 * 1000 } = {}
+  // Real FLUX generation on a T4 + hybrid eval can take 10-20 min; the old
+  // 10-min cap caused false "Timed out" errors on legitimately-slow runs.
+  { interval = 2000, timeout = 30 * 60 * 1000 } = {}
 ): Promise<T> {
   const started = Date.now();
   for (;;) {

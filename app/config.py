@@ -3,7 +3,15 @@ Settings loaded from environment variables (or a .env file via pydantic-settings
 All generation-related env vars default to safe/mock values so the app starts
 without any external credentials during dev.
 """
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Populate os.environ from the repo-root .env file (without overwriting real
+# environment vars). Some modules read os.environ directly — e.g. routes.py's
+# get_image_provider()/get_vision_evaluator() and graph.py's LLM_PROVIDER — so
+# without this, .env values like IMAGE_GENERATION_PROVIDER would be silently
+# ignored and every provider factory would fall back to its mock default.
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -16,6 +24,13 @@ class Settings(BaseSettings):
     # Secret used by NextAuth.js to sign JWTs (NEXTAUTH_SECRET env var on the frontend).
     # Must be set in production; a dummy value is provided so the app starts in tests.
     NEXTAUTH_SECRET: str = "dev-secret-change-me"
+
+    # --- Director LLM (concept generation) ---
+    # Groq is the current Director backend (fast + free tier). LLM_PROVIDER
+    # itself is read from the environment in app/graph.py (defaults to "groq");
+    # GROQ_API_KEY must be set in .env for real calls (never commit the key).
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
     # --- Generation provider ---
     # "mock" | "flux2_klein_kaggle" | "gemini"
@@ -64,6 +79,9 @@ class Settings(BaseSettings):
 
     # --- App ---
     DEBUG: bool = True
+    # Echo every SQL query to the console. Off by default (noisy); flip to
+    # "true" in .env when you actually need to debug queries.
+    SQL_ECHO: bool = False
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
 
 

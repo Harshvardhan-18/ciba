@@ -79,6 +79,7 @@ class GenerateResponse(BaseModel):
 
 _pipe = None
 _pipe_lock = threading.Lock()
+_infer_lock = threading.Lock()  # a T4 runs ONE FLUX generation at a time
 
 
 def _load_pipeline():
@@ -191,15 +192,19 @@ def generate(req: GenerateRequest) -> GenerateResponse:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # Serialize inference: concurrent pipe() calls on one T4 OOM the GPU and
+    # kill the process mid-response ("server disconnected without sending a
+    # response"). Lock so extra requests queue instead of crashing.
     try:
-        output = pipe(
-            prompt=req.prompt,
-            image=reference,
-            width=width,
-            height=height,
-            num_inference_steps=NUM_INFERENCE_STEPS,
-            guidance_scale=GUIDANCE_SCALE,
-        ).images[0]
+        with _infer_lock:
+            output = pipe(
+                prompt=req.prompt,
+                image=reference,
+                width=width,
+                height=height,
+                num_inference_steps=NUM_INFERENCE_STEPS,
+                guidance_scale=GUIDANCE_SCALE,
+            ).images[0]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"generation failed: {exc}") from exc
 
