@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # --- Image storage (V1: local disk, no S3) ---
     MEDIA_DIR: str = "media/generated"
 
+    # Which placements to generate per campaign: "all" (the fixed 3) or a
+    # comma-separated subset like "ig_feed" / "ig_feed,ig_story" to cut Kaggle
+    # GPU time during testing.
+    GENERATE_PLACEMENTS: str = "all"
+
     # --- Vision evaluator (Checkpoint 4) ---
     # "mock" | "hybrid". "hybrid" runs the real evaluation pipeline.
     # Defaults to "mock" so dev/tests don't need heavy deps or API quota.

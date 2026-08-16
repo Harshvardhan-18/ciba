@@ -37,6 +37,7 @@ from app.models import (
     CreativeAsset, CreativeConcept, Evaluation, GenerationAttempt,
     Platform, Placement, Product, User,
 )
+from app.config import settings
 from app.auth import get_current_user
 from app.database import get_db, get_session_factory
 from app.graph import (
@@ -53,6 +54,18 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3  # 1 initial + 2 regenerations, per frozen retry policy
+
+
+def _wanted_placements() -> list[str] | None:
+    """Subset of placements to generate this run, or None for all 3.
+
+    Controlled by GENERATE_PLACEMENTS ("all" or a comma-separated list like
+    "ig_feed" / "ig_feed,ig_story") to cut Kaggle GPU time during testing.
+    """
+    raw = (settings.GENERATE_PLACEMENTS or "all").strip()
+    if not raw or raw.lower() == "all":
+        return None
+    return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +535,13 @@ async def select_concept(
     result = planner.invoke(planner_state)
     asset_specs = result["asset_specs"]
 
-    # Create 3 fixed CreativeAsset rows, one per placement spec
+    # Testing phase: optionally restrict to a subset of placements (e.g. only
+    # ig_feed) to cut Kaggle GPU time per campaign.
+    wanted = _wanted_placements()
+    if wanted is not None:
+        asset_specs = [s for s in asset_specs if s["placement"] in wanted]
+
+    # Create CreativeAsset rows, one per placement spec
     asset_ids: list[uuid.UUID] = []
     for spec in asset_specs:
         asset = CreativeAsset(
@@ -838,7 +857,9 @@ async def _run_generation_loop(
                 select(CreativeAsset).where(CreativeAsset.id == asset_id)
             )).scalar_one()
             asset.status = AssetStatus.GENERATING
-            await db.flush()
+            # Commit so the frontend's live poll sees "generating" (and can show
+            # "attempt N in progress") instead of being stuck on pending.
+            await db.commit()
 
             # Only non-infra (quality) attempts count against the retry budget.
             quality_count = len((await db.execute(

@@ -179,6 +179,8 @@ export async function poll<T>(
 
 export function mediaUrl(imageUrl: string | null): string | null {
   if (!imageUrl) return null;
-  const file = imageUrl.split("/").pop();
+  // Stored paths can use either separator (Windows writes backslashes); the
+  // /media mount serves files by basename, so normalize the split.
+  const file = imageUrl.split(/[\\/]/).pop();
   return file ? `${API_ORIGIN}/media/${file}` : null;
 }

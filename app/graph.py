@@ -166,7 +166,9 @@ class RemoteFluxKaggleProvider(ImageGenerationProvider):
         path = media_dir / f"{width}x{height}_{uuid.uuid4().hex}.png"
         path.write_bytes(data)
         logger.info("RemoteFluxKaggleProvider: saved %s (%d bytes)", path, len(data))
-        return str(path)
+        # Store forward slashes so image_url is cross-platform and the frontend
+        # can build the /media URL reliably (Windows paths use backslashes).
+        return str(path).replace("\\", "/")
 
 
 class GeminiImageProvider(ImageGenerationProvider):
@@ -602,7 +604,8 @@ def _build_generation_prompt(
         # the space). Asking FLUX to render text at 4 inference steps produces
         # garbled text that fails the OCR legibility check (critical_text_error)
         # and kills the asset — so keep the generated frame text-free.
-        "Do not render any text, words, logos, or typography in the image.",
+        "STRICT: absolutely no text, words, letters, logos, or typography in the "
+        "image — the frame must be completely text-free (copy is overlaid later).",
         "Preserve product identity exactly — reference image conditioning required.",
         "Photorealistic, high production value, ready for publication.",
     ]

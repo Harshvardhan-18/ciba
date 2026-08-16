@@ -504,6 +504,8 @@ const PLACEMENT_LABELS: Record<string, string> = {
   website_hero: "Website Hero · 16:9",
 };
 
+const MAX_ATTEMPTS = 3; // 1 initial + 2 regenerations, per retry policy
+
 function statusBadge(status: string) {
   switch (status) {
     case "approved":
@@ -638,7 +640,7 @@ function AssetsPanel({
               {!terminal && (
                 <div className="small muted" style={{ margin: "6px 0 0" }}>
                   {asset.status === "generating"
-                    ? "Rendering + evaluating…"
+                    ? `Generating attempt ${asset.attempts.length + 1} of ${MAX_ATTEMPTS}…`
                     : "Queued — waiting for the FLUX worker…"}
                 </div>
               )}
