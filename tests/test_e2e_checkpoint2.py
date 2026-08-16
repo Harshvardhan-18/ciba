@@ -52,7 +52,10 @@ from app.auth import get_current_user
 
 # Force mock providers — no real credentials needed
 os.environ["IMAGE_GENERATION_PROVIDER"] = "mock"
+os.environ["VISION_EVALUATOR_PROVIDER"] = "mock"
 os.environ["LLM_PROVIDER"] = "gemini"  # will be monkeypatched below
+# Full 3-asset flow regardless of .env (dev .env may restrict to ig_feed).
+os.environ["GENERATE_PLACEMENTS"] = "all"
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",

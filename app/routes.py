@@ -62,7 +62,8 @@ def _wanted_placements() -> list[str] | None:
     Controlled by GENERATE_PLACEMENTS ("all" or a comma-separated list like
     "ig_feed" / "ig_feed,ig_story") to cut Kaggle GPU time during testing.
     """
-    raw = (settings.GENERATE_PLACEMENTS or "all").strip()
+    # os.environ first (so tests can override after import), then settings (.env).
+    raw = (os.environ.get("GENERATE_PLACEMENTS") or settings.GENERATE_PLACEMENTS or "all").strip()
     if not raw or raw.lower() == "all":
         return None
     return [p.strip().lower() for p in raw.split(",") if p.strip()]
